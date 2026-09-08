@@ -6,11 +6,12 @@ import { lookupCSGT } from './csgt.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
+const VERSION = '1.2.1-browser';
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
-app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'CSGT' }));
-app.get('/health', (_req, res) => res.json({ ok: true }));
-app.listen(PORT, () => console.log(`Health server listening on ${PORT}`));
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'CSGT-browser', version: VERSION }));
+app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
+app.listen(PORT, () => console.log(`Health server listening on ${PORT} | ${VERSION}`));
 
 const bot = new Telegraf(TOKEN);
 
@@ -44,18 +45,18 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
     return;
   }
 
-  const wait = await ctx.reply(`🔎 Đang tra cứu ${plate} trực tiếp từ CSGT...`);
+  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate} bằng trình duyệt CSGT...`);
 
   try {
     const result = await lookupCSGT(plate, vehicleType);
     const violations = result.violations || [];
 
     if (!violations.length) {
-      await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `✅ CSGT hiện không trả về vi phạm cho ${plate}.`);
+      await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `✅ [${VERSION}] CSGT hiện không trả về vi phạm cho ${plate}.`);
       return;
     }
 
-    const header = `🚘 Biển số: ${plate}\n📊 Số vi phạm: ${violations.length}\n🔗 Nguồn: Cục CSGT`;
+    const header = `🚘 Biển số: ${plate}\n📊 Số vi phạm: ${violations.length}\n🔗 Nguồn: Cục CSGT\n⚙️ Bot: ${VERSION}`;
     const parts = violations.map(formatViolation);
     let current = header;
     let edited = false;
@@ -74,19 +75,19 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
       }
     }
 
-    if (!edited) {
-      await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, current);
-    } else {
-      await ctx.reply(current);
-    }
+    if (!edited) await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, current);
+    else await ctx.reply(current);
   } catch (error) {
-    console.error('Direct CSGT lookup failed:', error.message);
-    await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `❌ CSGT chưa trả được kết quả cho ${plate}. Bot đã thử lại CAPTCHA nhiều lần.`);
+    const detail = String(error?.message || error || 'unknown error').slice(0, 500);
+    console.error(`[${VERSION}] CSGT browser lookup failed:`, error?.stack || detail);
+    await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined,
+      `❌ [${VERSION}] Tra cứu thất bại cho ${plate}.\n\nLỗi thực tế: ${detail}`
+    );
   }
 }
 
 bot.start(async ctx => {
-  await ctx.reply('🚦 Tra cứu phạt nguội Việt Nam\n\nNguồn chính: Cục CSGT.\n\nGửi trực tiếp biển số ô tô, ví dụ:\n43A40281\n43A-402.81\n\nLệnh:\n/tracuu 43A40281\n/xemay 43F112345');
+  await ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ Phiên bản: ${VERSION}\n\nNguồn chính: Cục CSGT qua trình duyệt tự động.\n\nGửi trực tiếp biển số ô tô, ví dụ:\n43A40281\n43A-402.81\n\nLệnh:\n/tracuu 43A40281\n/xemay 43F112345`);
 });
 
 bot.command('tracuu', async ctx => {
@@ -110,7 +111,7 @@ bot.catch((err, ctx) => {
 });
 
 await bot.launch({ dropPendingUpdates: false });
-console.log('Telegram bot started with Telegraf + direct CSGT lookup');
+console.log(`Telegram bot started | ${VERSION}`);
 
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
