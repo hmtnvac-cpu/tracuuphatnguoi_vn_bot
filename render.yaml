@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tracuuphatnguoi-vn-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PHATNGUOI_API_URL
+        value: https://api.checkphatnguoi.vn/phatnguoi
