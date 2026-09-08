@@ -11,7 +11,7 @@ function timeoutPromise(ms) {
 }
 
 async function readCaptcha(page) {
-  const el = await page.waitForSelector('#imgCaptcha', { timeout: 10000 });
+  const el = await page.waitForSelector('#imgCaptcha', { timeout: 12000 });
   const png = await el.screenshot({ type: 'png' });
   const result = await Promise.race([
     Tesseract.recognize(png, 'eng'),
@@ -58,37 +58,57 @@ function parseViolations(html) {
 async function lookupInternal(plate, vehicleType) {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1920,1080']
+    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1366,768']
   });
   let lastError;
   try {
     const page = await browser.newPage();
-    page.setDefaultTimeout(10000);
-    page.setDefaultNavigationTimeout(20000);
+    page.setDefaultTimeout(12000);
+    page.setDefaultNavigationTimeout(35000);
     await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36');
-    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setViewport({ width: 1366, height: 768 });
+
+    await page.setRequestInterception(true);
+    page.on('request', req => {
+      const type = req.resourceType();
+      const url = req.url();
+      if (type === 'font' || type === 'media' || type === 'stylesheet') return req.abort();
+      if (type === 'image' && !url.includes('captcha')) return req.abort();
+      req.continue();
+    });
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         console.log(`Browser CSGT attempt ${attempt}/${MAX_RETRIES}`);
-        await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        try {
+          await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 35000 });
+        } catch (navError) {
+          const formExists = await page.$('input[name="BienKiemSoat"]');
+          if (!formExists) throw navError;
+          console.warn('CSGT navigation timed out but form is already usable; continuing.');
+        }
+
         await page.waitForSelector('input[name="BienKiemSoat"]');
         await page.waitForSelector('select[name="LoaiXe"]');
         await page.waitForSelector('input[name="txt_captcha"]');
         await page.waitForSelector('.btnTraCuu');
+
         const captcha = await readCaptcha(page);
         if (!captcha || captcha.length < 3) throw new Error(`OCR captcha không hợp lệ: ${captcha || '(rỗng)'}`);
         console.log(`Browser OCR captcha=${captcha}`);
+
         await page.$eval('input[name="BienKiemSoat"]', (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }, plate);
         await page.select('select[name="LoaiXe"]', String(vehicleType));
         await page.$eval('input[name="txt_captcha"]', (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }, captcha);
         await page.click('.btnTraCuu');
-        await new Promise(r => setTimeout(r, 4000));
+        await new Promise(r => setTimeout(r, 5000));
+
         const bodyText = await page.evaluate(() => document.body.innerText || '');
         if (bodyText.includes('Mã xác nhận sai!')) {
           lastError = new Error('Captcha rejected by CSGT');
           continue;
         }
+
         const html = await page.content();
         const violations = parseViolations(html);
         if (violations.length) return { source: 'CSGT-browser', violations };
