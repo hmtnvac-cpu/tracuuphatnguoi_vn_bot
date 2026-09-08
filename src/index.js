@@ -6,7 +6,7 @@ import { lookupCSGT } from './csgt.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
-const VERSION = '1.2.1-browser';
+const VERSION = '1.2.2-browser';
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
 app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'CSGT-browser', version: VERSION }));
