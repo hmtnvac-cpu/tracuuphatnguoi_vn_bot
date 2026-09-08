@@ -1,9 +1,10 @@
 {
   "name": "tracuuphatnguoi-vn-bot",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "npx puppeteer browsers install chrome",
     "start": "node src/index.js"
   },
   "engines": {
