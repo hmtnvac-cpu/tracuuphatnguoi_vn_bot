@@ -1,6 +1,6 @@
 {
   "name": "tracuuphatnguoi-vn-bot",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,14 +10,11 @@
     "node": "20.19.5"
   },
   "dependencies": {
-    "axios": "^0.21.1",
-    "axios-cookiejar-support": "^5.0.5",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "qs": "^6.14.0",
+    "puppeteer": "^24.16.0",
     "telegraf": "^4.16.3",
-    "tesseract.js": "^6.0.0",
-    "tough-cookie": "^5.1.2"
+    "tesseract.js": "^6.0.0"
   }
 }
