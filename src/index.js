@@ -7,7 +7,7 @@ import { lookupMultiSource } from './providers.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
-const VERSION = '2.0.0-csgt-official';
+const VERSION = '2.1.0-phatnguoi-app';
 const PORT = Number(process.env.PORT || 3000);
 const EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_BASE_URL || '';
 const WEBHOOK_PATH = '/telegram';
@@ -35,7 +35,7 @@ function resultText(plate, result, daily = false) {
 async function handleLookup(ctx, raw, vehicleType = '1') {
   const plate = normalizePlate(raw);
   if (!isLikelyPlate(plate)) return ctx.reply('Biển số chưa đúng định dạng. Ví dụ: 43A40281 hoặc 43A-402.81');
-  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate} trên CSGT Bộ Công An...`);
+  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate}...`);
   try {
     const result = await lookupMultiSource(plate, vehicleType);
     await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, resultText(plate, result));
@@ -45,7 +45,7 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
   }
 }
 
-bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nNguồn chính thức: CSGT Bộ Công An.\nhttps://csgt.bocongan.gov.vn/tra-cuu-vi-pham-qua-hinh-anh\n\nTheo dõi hằng ngày lúc 07:00:\n/theodoi 43A40281\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
+bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nNguồn hiện tại: phatnguoi.app (AJAX + nonce, không cần mở Chrome).\n\nTheo dõi hằng ngày lúc 07:00:\n/theodoi 43A40281\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
 bot.command('tracuu', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/tracuu(?:@\w+)?\s*/i, '').trim(), '1'));
 bot.command('xemay', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/xemay(?:@\w+)?\s*/i, '').trim(), '2'));
 bot.command('theodoi', async ctx => {
@@ -79,7 +79,7 @@ cron.schedule('0 7 * * *', async () => {
 bot.catch((err, ctx) => console.error(`Telegram error ${ctx.update?.update_id}:`, err.message));
 
 const app = express();
-app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', version: VERSION, source: 'CSGT Bộ Công An', mode: EXTERNAL_URL ? 'webhook' : 'polling' }));
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', version: VERSION, source: 'phatnguoi.app', mode: EXTERNAL_URL ? 'webhook' : 'polling' }));
 app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
 app.use(bot.webhookCallback(WEBHOOK_PATH));
 
