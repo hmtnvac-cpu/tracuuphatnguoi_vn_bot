@@ -1,23 +1,53 @@
-import puppeteer from 'puppeteer';
+import axios from 'axios';
+import qs from 'qs';
 import Tesseract from 'tesseract.js';
 import * as cheerio from 'cheerio';
+import { CookieJar } from 'tough-cookie';
+import { wrapper } from 'axios-cookiejar-support';
 
-const URL = 'https://www.csgt.vn/tra-cuu-phuong-tien-vi-pham.html';
-const MAX_RETRIES = 2;
-const TOTAL_TIMEOUT_MS = 60000;
+const CSGT_URL = 'https://www.csgt.vn/';
+const CAPTCHA_URL = `${CSGT_URL}lib/captcha/captcha.class.php`;
+const SUBMIT_URL = `${CSGT_URL}?mod=contact&task=tracuu_post&ajax`;
+const FORM_URL = `${CSGT_URL}tra-cuu-phuong-tien-vi-pham.html`;
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+const MAX_ATTEMPTS = 4;
+const TOTAL_TIMEOUT_MS = 55000;
 
-function timeoutPromise(ms) {
-  return new Promise((_, reject) => setTimeout(() => reject(new Error(`Hết thời gian tra cứu sau ${Math.round(ms / 1000)} giây`)), ms));
+function hardTimeout(ms, message) {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms));
 }
 
-async function readCaptcha(page) {
-  const el = await page.waitForSelector('#imgCaptcha', { timeout: 12000 });
-  const png = await el.screenshot({ type: 'png' });
+function newClient() {
+  const jar = new CookieJar();
+  return wrapper(axios.create({
+    jar,
+    withCredentials: true,
+    timeout: 18000,
+    maxRedirects: 5,
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8'
+    }
+  }));
+}
+
+async function solveCaptcha(client) {
+  const response = await client.get(CAPTCHA_URL, { responseType: 'arraybuffer' });
+  const image = Buffer.from(response.data);
   const result = await Promise.race([
-    Tesseract.recognize(png, 'eng'),
-    timeoutPromise(15000)
+    Tesseract.recognize(image, 'eng', {
+      config: {
+        tessedit_pageseg_mode: '7',
+        tessedit_char_whitelist: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      }
+    }),
+    hardTimeout(12000, 'OCR CAPTCHA quá thời gian')
   ]);
   return result.data.text.replace(/[^A-Za-z0-9]/g, '').trim();
+}
+
+function normalizeText(s = '') {
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 function parseViolations(html) {
@@ -25,6 +55,7 @@ function parseViolations(html) {
   const violations = [];
   let current = {};
   let resolutionPlaces = [];
+
   const push = () => {
     if (!Object.keys(current).length) return;
     current.resolutionPlaces = resolutionPlaces;
@@ -32,10 +63,12 @@ function parseViolations(html) {
     current = {};
     resolutionPlaces = [];
   };
+
   $('#bodyPrint123 .form-group, .form-group').each((_i, el) => {
     if ($(el).prev().is('hr') && Object.keys(current).length) push();
-    const label = $(el).find('label span').text().replace(/\s+/g, ' ').trim();
-    const value = $(el).find('.col-md-9').text().replace(/\s+/g, ' ').trim();
+    const label = normalizeText($(el).find('label span').text());
+    const value = normalizeText($(el).find('.col-md-9').text());
+
     if (label && value) {
       if (label === 'Biển kiểm soát:') current.licensePlate = value;
       else if (label === 'Màu biển:') current.plateColor = value;
@@ -46,88 +79,104 @@ function parseViolations(html) {
       else if (label === 'Trạng thái:') current.status = value;
       else if (label === 'Đơn vị phát hiện vi phạm:') current.detectionUnit = value;
     }
-    const text = $(el).text().replace(/\s+/g, ' ').trim();
+
+    const text = normalizeText($(el).text());
     if (/^\d+\./.test(text)) resolutionPlaces.push({ name: text });
-    else if (text.startsWith('Địa chỉ:') && resolutionPlaces.length) resolutionPlaces[resolutionPlaces.length - 1].address = text.replace(/^Địa chỉ:/, '').trim();
+    else if (text.startsWith('Địa chỉ:') && resolutionPlaces.length) {
+      resolutionPlaces[resolutionPlaces.length - 1].address = text.replace(/^Địa chỉ:/, '').trim();
+    }
+
     if ($(el).next().is('hr')) push();
   });
+
   push();
   return violations.filter(v => v.licensePlate || v.violationTime || v.violationBehavior);
 }
 
-async function lookupInternal(plate, vehicleType) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1366,768']
+async function fetchDetails(client, href) {
+  const url = href.startsWith('http') ? href : new URL(href, CSGT_URL).href;
+  const response = await client.get(url, {
+    headers: { Referer: FORM_URL, 'User-Agent': USER_AGENT },
+    timeout: 18000
   });
+  const html = String(response.data || '');
+  const violations = parseViolations(html);
+  const $ = cheerio.load(html);
+  const message = normalizeText($('#bodyPrint123').text()) || normalizeText($('.xe_texterror').text());
+  return { violations, message };
+}
+
+async function singleAttempt(plate, vehicleType) {
+  const client = newClient();
+  const captcha = await solveCaptcha(client);
+  if (!captcha || captcha.length < 3) throw new Error(`OCR CAPTCHA không hợp lệ: ${captcha || '(rỗng)'}`);
+
+  console.log(`HTTP CSGT captcha=${captcha}`);
+
+  const form = qs.stringify({
+    BienKS: plate,
+    Xe: String(vehicleType),
+    captcha,
+    ipClient: '9.9.9.91',
+    cUrl: FORM_URL
+  });
+
+  const response = await client.post(SUBMIT_URL, form, {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'User-Agent': USER_AGENT,
+      'Referer': FORM_URL,
+      'Origin': CSGT_URL.replace(/\/$/, ''),
+      'X-Requested-With': 'XMLHttpRequest'
+    },
+    timeout: 18000
+  });
+
+  const raw = typeof response.data === 'string' ? response.data.trim().replace(/^\uFEFF/, '') : response.data;
+  if (raw === 404 || raw === '404') throw new Error('CAPTCHA_MISMATCH');
+
+  let submit = raw;
+  if (typeof raw === 'string') {
+    try { submit = JSON.parse(raw); }
+    catch { throw new Error(`CSGT trả phản hồi không hợp lệ: ${raw.slice(0, 120)}`); }
+  }
+
+  if (!submit || typeof submit !== 'object') throw new Error('CSGT không trả JSON hợp lệ');
+
+  const href = submit.Href || submit.href;
+  if (!href) {
+    const direct = `${FORM_URL}?LoaiXe=${encodeURIComponent(vehicleType)}&BienKiemSoat=${encodeURIComponent(plate)}`;
+    const details = await fetchDetails(client, direct);
+    return { source: 'CSGT-http', ...details };
+  }
+
+  const details = await fetchDetails(client, href);
+  return { source: 'CSGT-http', ...details };
+}
+
+async function lookupInternal(plate, vehicleType) {
   let lastError;
-  try {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(12000);
-    page.setDefaultNavigationTimeout(35000);
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36');
-    await page.setViewport({ width: 1366, height: 768 });
-
-    await page.setRequestInterception(true);
-    page.on('request', req => {
-      const type = req.resourceType();
-      const url = req.url();
-      if (type === 'font' || type === 'media' || type === 'stylesheet') return req.abort();
-      if (type === 'image' && !url.includes('captcha')) return req.abort();
-      req.continue();
-    });
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        console.log(`Browser CSGT attempt ${attempt}/${MAX_RETRIES}`);
-        try {
-          await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 35000 });
-        } catch (navError) {
-          const formExists = await page.$('input[name="BienKiemSoat"]');
-          if (!formExists) throw navError;
-          console.warn('CSGT navigation timed out but form is already usable; continuing.');
-        }
-
-        await page.waitForSelector('input[name="BienKiemSoat"]');
-        await page.waitForSelector('select[name="LoaiXe"]');
-        await page.waitForSelector('input[name="txt_captcha"]');
-        await page.waitForSelector('.btnTraCuu');
-
-        const captcha = await readCaptcha(page);
-        if (!captcha || captcha.length < 3) throw new Error(`OCR captcha không hợp lệ: ${captcha || '(rỗng)'}`);
-        console.log(`Browser OCR captcha=${captcha}`);
-
-        await page.$eval('input[name="BienKiemSoat"]', (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }, plate);
-        await page.select('select[name="LoaiXe"]', String(vehicleType));
-        await page.$eval('input[name="txt_captcha"]', (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }, captcha);
-        await page.click('.btnTraCuu');
-        await new Promise(r => setTimeout(r, 5000));
-
-        const bodyText = await page.evaluate(() => document.body.innerText || '');
-        if (bodyText.includes('Mã xác nhận sai!')) {
-          lastError = new Error('Captcha rejected by CSGT');
-          continue;
-        }
-
-        const html = await page.content();
-        const violations = parseViolations(html);
-        if (violations.length) return { source: 'CSGT-browser', violations };
-        if (bodyText.includes('Không tìm thấy kết quả') || bodyText.includes('Không có kết quả')) return { source: 'CSGT-browser', violations: [] };
-        throw new Error('CSGT không trả trạng thái kết quả hợp lệ');
-      } catch (error) {
-        lastError = error;
-        console.error(`Browser CSGT attempt ${attempt} failed:`, error.message);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      console.log(`HTTP CSGT attempt ${attempt}/${MAX_ATTEMPTS}`);
+      const result = await singleAttempt(plate, vehicleType);
+      if (result.violations?.length) return result;
+      if (result.message) return result;
+      lastError = new Error('CSGT không trả dữ liệu kết quả');
+    } catch (error) {
+      lastError = error;
+      console.error(`HTTP CSGT attempt ${attempt} failed:`, error.message);
+      if (error.message !== 'CAPTCHA_MISMATCH') {
+        if (attempt >= 2) break;
       }
     }
-  } finally {
-    await browser.close().catch(() => {});
   }
-  throw lastError || new Error('Không thể tra cứu CSGT qua browser');
+  throw lastError || new Error('Không thể tra cứu CSGT');
 }
 
 export async function lookupCSGT(plate, vehicleType = '1') {
   return Promise.race([
     lookupInternal(plate, vehicleType),
-    timeoutPromise(TOTAL_TIMEOUT_MS)
+    hardTimeout(TOTAL_TIMEOUT_MS, 'Hết thời gian tra cứu CSGT sau 55 giây')
   ]);
 }
