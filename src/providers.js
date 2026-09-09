@@ -1,6 +1,6 @@
 import puppeteer from 'puppeteer';
 
-const SITE = 'https://phatnguoi.vn/';
+const SITE = 'https://csgt.bocongan.gov.vn/tra-cuu-vi-pham-qua-hinh-anh';
 let browserPromise;
 
 async function getBrowser() {
@@ -8,35 +8,29 @@ async function getBrowser() {
     browserPromise = puppeteer.launch({
       headless: true,
       args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1366,900']
-    }).catch(err => {
-      browserPromise = null;
-      throw err;
-    });
+    }).catch(err => { browserPromise = null; throw err; });
   }
   return browserPromise;
 }
 
-function clean(text = '') {
-  return String(text).replace(/\s+/g, ' ').trim();
-}
+const clean = (text = '') => String(text).replace(/\s+/g, ' ').trim();
 
 function valueAfter(text, label) {
   const re = new RegExp(`${label}\\s*[:：]?\\s*([^|\\n]+)`, 'i');
   return clean(text.match(re)?.[1] || '');
 }
 
-function parseBlocks(text, plate) {
-  const normalized = text.replace(/\r/g, '');
-  const lower = normalized.toLowerCase();
-  if (/không (có|tìm thấy).*phạt nguội|không tìm thấy.*vi phạm|không có kết quả/i.test(normalized)) {
-    return { source: 'phatnguoi.vn live website', violations: [], message: clean(normalized).slice(0, 500) };
+function parseResultText(text, plate) {
+  const normalized = String(text || '').replace(/\r/g, '');
+  if (/không (có|tìm thấy).*vi phạm|không có kết quả|không tìm thấy kết quả/i.test(normalized)) {
+    return { source: 'CSGT Bộ Công An', violations: [], message: clean(normalized).slice(0, 600) };
   }
 
   const starts = [];
   for (const m of normalized.matchAll(/Biển kiểm soát\s*[:：]?/gi)) starts.push(m.index);
   if (!starts.length) {
-    if (lower.includes(plate.toLowerCase()) && /vi phạm|chưa xử phạt|đã xử phạt/i.test(normalized)) starts.push(0);
-    else throw new Error('Trang phatnguoi.vn chưa trả kết quả nhận diện được');
+    if (normalized.toUpperCase().includes(plate) && /vi phạm|xử phạt|thời gian|địa điểm/i.test(normalized)) starts.push(0);
+    else throw new Error('CSGT chưa trả kết quả nhận diện được');
   }
   starts.push(normalized.length);
 
@@ -44,9 +38,9 @@ function parseBlocks(text, plate) {
   for (let i = 0; i < starts.length - 1; i++) {
     const block = normalized.slice(starts[i], starts[i + 1]);
     if (!/vi phạm|xử phạt|thời gian|địa điểm/i.test(block)) continue;
-    const resolution = [];
-    const resMatch = block.match(/Nơi giải quyết vụ việc\s*[:：]?([\s\S]*?)(?=Biển kiểm soát|$)/i)?.[1];
-    if (resMatch) resolution.push({ name: clean(resMatch).slice(0, 700) });
+    const resolutionPlaces = [];
+    const res = block.match(/Nơi giải quyết vụ việc\s*[:：]?([\s\S]*?)(?=Biển kiểm soát|$)/i)?.[1];
+    if (res) resolutionPlaces.push({ name: clean(res).slice(0, 700) });
     violations.push({
       licensePlate: valueAfter(block, 'Biển kiểm soát') || plate,
       plateColor: valueAfter(block, 'Màu biển'),
@@ -56,68 +50,79 @@ function parseBlocks(text, plate) {
       violationBehavior: valueAfter(block, 'Hành vi vi phạm'),
       status: valueAfter(block, 'Trạng thái'),
       detectionUnit: valueAfter(block, 'Đơn vị phát hiện vi phạm'),
-      resolutionPlaces: resolution
+      resolutionPlaces
     });
   }
 
-  if (!violations.length) throw new Error('Có phản hồi từ website nhưng chưa bóc tách được dữ liệu vi phạm');
-  return { source: 'phatnguoi.vn live website', violations };
+  if (!violations.length) throw new Error('CSGT có phản hồi nhưng chưa bóc tách được dữ liệu');
+  return { source: 'CSGT Bộ Công An', violations };
+}
+
+async function fillVehicle(page, vehicleType) {
+  const options = await page.$$('select');
+  for (const select of options) {
+    const vals = await select.$$eval('option', opts => opts.map(o => ({ value: o.value, text: (o.textContent || '').trim().toLowerCase() })));
+    if (!vals.length) continue;
+    const target = String(vehicleType) === '2'
+      ? vals.find(x => /mô tô|xe máy|motor/.test(x.text))
+      : vals.find(x => /ô tô|oto|car/.test(x.text));
+    if (target) { await select.select(target.value); return; }
+  }
+
+  const radios = await page.$$('input[type="radio"]');
+  if (radios.length) {
+    const idx = String(vehicleType) === '2' ? Math.min(1, radios.length - 1) : 0;
+    await radios[idx].click().catch(() => {});
+  }
 }
 
 export async function lookupMultiSource(plate, vehicleType = '1') {
   const browser = await getBrowser();
   const page = await browser.newPage();
+  const network = [];
   try {
     page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(25000);
+    page.setDefaultNavigationTimeout(30000);
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1366, height: 900 });
 
-    const network = [];
-    page.on('response', async res => {
+    page.on('response', res => {
       const req = res.request();
-      const type = req.resourceType();
-      if (type === 'xhr' || type === 'fetch') {
+      if (['xhr','fetch'].includes(req.resourceType())) {
         network.push(`${req.method()} ${res.status()} ${res.url()}`);
       }
     });
 
-    await page.goto(SITE, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await page.goto(SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    const input = await page.$('input[placeholder*="Nhập Biển Số Xe"]');
-    if (!input) throw new Error('Không tìm thấy ô nhập biển số trên phatnguoi.vn');
-
+    const input = await page.$('input[placeholder*="biển" i], input[name*="bien" i], input[id*="bien" i], input[type="text"]');
+    if (!input) throw new Error('Không tìm thấy ô nhập biển số trên CSGT mới');
     await input.click({ clickCount: 3 });
-    await input.type(plate, { delay: 25 });
+    await input.type(plate, { delay: 20 });
 
-    // Best-effort vehicle selection: first vehicle option is car, second is motorbike.
-    const vehicleInputs = await page.$$('input[type="radio"], input[type="checkbox"]');
-    if (vehicleInputs.length) {
-      const idx = String(vehicleType) === '2' ? Math.min(1, vehicleInputs.length - 1) : 0;
-      await vehicleInputs[idx].click().catch(() => {});
-    }
+    await fillVehicle(page, vehicleType);
 
     const clicked = await page.evaluate(() => {
-      const els = [...document.querySelectorAll('button,input[type="submit"],input[type="button"]')];
-      const el = els.find(x => ((x.innerText || x.value || '').trim().toLowerCase()).includes('tra cứu'));
+      const els = [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')];
+      const el = els.find(x => /tra cứu|tìm kiếm|kiểm tra/i.test((x.innerText || x.value || '').trim()));
       if (!el) return false;
       el.click();
       return true;
     });
-    if (!clicked) throw new Error('Không tìm thấy nút Tra Cứu trên phatnguoi.vn');
+    if (!clicked) throw new Error('Không tìm thấy nút Tra cứu trên CSGT mới');
 
     await Promise.race([
       page.waitForFunction(() => {
         const t = document.body.innerText || '';
-        return /Biển kiểm soát|không (có|tìm thấy).*phạt nguội|không tìm thấy.*vi phạm|không có kết quả/i.test(t);
-      }, { timeout: 22000 }).catch(() => null),
-      new Promise(resolve => setTimeout(resolve, 12000))
+        return /Biển kiểm soát|không (có|tìm thấy).*vi phạm|không có kết quả|trạng thái|hành vi vi phạm/i.test(t);
+      }, { timeout: 25000 }).catch(() => null),
+      new Promise(resolve => setTimeout(resolve, 15000))
     ]);
 
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 1200));
     const text = await page.evaluate(() => document.body.innerText || '');
-    console.log('phatnguoi.vn XHR/fetch:', network.slice(-10));
-    return parseBlocks(text, plate);
+    console.log('CSGT new site XHR/fetch:', network.slice(-15));
+    return parseResultText(text, plate);
   } finally {
     await page.close().catch(() => {});
   }
