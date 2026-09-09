@@ -1,10 +1,11 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const http = axios.create({
-  timeout: 9000,
+  timeout: 12000,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+    'User-Agent': UA,
     'Accept': 'application/json,text/plain,text/html,*/*'
   }
 });
@@ -14,6 +15,7 @@ function arr(value) {
   if (Array.isArray(value?.data)) return value.data;
   if (Array.isArray(value?.violations)) return value.violations;
   if (Array.isArray(value?.data?.violations)) return value.data.violations;
+  if (Array.isArray(value?.result)) return value.result;
   return [];
 }
 
@@ -24,26 +26,40 @@ function get(obj, ...keys) {
   return undefined;
 }
 
-function normalize(items) {
-  return items.map(v => ({
-    licensePlate: get(v, 'Biển kiểm soát', 'bienso', 'licensePlate', 'license_plate'),
-    plateColor: get(v, 'Màu biển', 'maubien', 'plateColor'),
-    vehicleType: get(v, 'Loại phương tiện', 'loaiphuongtien', 'vehicleType', 'vehicle_type'),
-    violationTime: get(v, 'Thời gian vi phạm', 'thoigian', 'violationTime', 'violation_time'),
-    violationLocation: get(v, 'Địa điểm vi phạm', 'diadiem', 'violationLocation', 'location'),
-    violationBehavior: get(v, 'Hành vi vi phạm', 'hanhvi', 'violationBehavior', 'behavior'),
-    status: get(v, 'Trạng thái', 'trangthai', 'status'),
-    detectionUnit: get(v, 'Đơn vị phát hiện vi phạm', 'donvi', 'detectionUnit', 'detecting_unit'),
+function normalizeOne(v) {
+  return {
+    licensePlate: get(v, 'plate', 'Biển kiểm soát', 'bienso', 'licensePlate', 'license_plate'),
+    plateColor: get(v, 'color', 'Màu biển', 'maubien', 'plateColor'),
+    vehicleType: get(v, 'vehicle', 'Loại phương tiện', 'loaiphuongtien', 'vehicleType', 'vehicle_type'),
+    violationTime: get(v, 'time', 'Thời gian vi phạm', 'thoigian', 'violationTime', 'violation_time'),
+    violationLocation: get(v, 'location', 'Địa điểm vi phạm', 'diadiem', 'violationLocation'),
+    violationBehavior: get(v, 'behavior', 'Hành vi vi phạm', 'hanhvi', 'violationBehavior'),
+    status: get(v, 'status', 'Trạng thái', 'trangthai'),
+    detectionUnit: get(v, 'unit', 'Đơn vị phát hiện vi phạm', 'donvi', 'detectionUnit', 'detecting_unit'),
     resolutionPlaces: (() => {
-      const p = get(v, 'Nơi giải quyết vụ việc', 'noigiaiquyet', 'resolutionPlaces', 'resolution_point');
+      const p = get(v, 'resolutionPlaces', 'Nơi giải quyết vụ việc', 'noigiaiquyet', 'resolution_point');
       if (!p) return [];
       if (Array.isArray(p)) return p.map(x => typeof x === 'string' ? { name: x } : x);
       return [{ name: String(p) }];
     })()
-  }));
+  };
+}
+
+function normalize(items) {
+  return items.map(normalizeOne);
 }
 
 function payloadResult(source, data) {
+  if (data && typeof data === 'object' && data.violation === false) {
+    return { source, violations: [], message: String(data.message || data.msg || '') };
+  }
+
+  if (data && typeof data === 'object' && data.violation === true) {
+    const candidates = arr(data);
+    if (candidates.length) return { source, violations: normalize(candidates) };
+    return { source, violations: [normalizeOne(data)] };
+  }
+
   const items = normalize(arr(data));
   const explicitEmpty = data?.status === 2 || data?.success === true || data?.data_info || data?.message || data?.msg;
   if (items.length) return { source, violations: items };
@@ -51,9 +67,25 @@ function payloadResult(source, data) {
   throw new Error(`${source}: response format unknown`);
 }
 
-async function phatnguoiVN(plate, type) {
+async function phatnguoiVideoAPI(plate) {
+  const { data } = await http.post('https://api.phatnguoi.vn/phatnguoi',
+    { plate },
+    {
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json',
+        'Origin': 'https://phatnguoi.vn',
+        'Referer': 'https://phatnguoi.vn/'
+      }
+    }
+  );
+  return payloadResult('api.phatnguoi.vn/phatnguoi', data);
+}
+
+async function phatnguoiLegacy(plate, type) {
   const { data } = await http.get(`https://api.phatnguoi.vn/web/tra-cuu/${encodeURIComponent(plate)}/${encodeURIComponent(type)}`);
-  return payloadResult('phatnguoi.vn', data);
+  return payloadResult('phatnguoi.vn legacy', data);
 }
 
 async function zmIO(plate, type) {
@@ -62,7 +94,7 @@ async function zmIO(plate, type) {
 }
 
 async function traCuuPhatNguoiNet(plate, type) {
-  const session = axios.create({ timeout: 9000, headers: http.defaults.headers });
+  const session = axios.create({ timeout: 12000, headers: { 'User-Agent': UA } });
   const home = await session.get('https://tracuuphatnguoi.net/');
   const html = String(home.data || '');
   const $ = cheerio.load(html);
@@ -71,7 +103,7 @@ async function traCuuPhatNguoiNet(plate, type) {
   const cookie = setCookies.map(c => c.split(';')[0]).join('; ');
   if (!token || !cookie) throw new Error('tracuuphatnguoi.net: missing token/session');
   const { data } = await session.post(`https://tracuuphatnguoi.net/tracuu1.php?BienKS=${encodeURIComponent(plate)}&Xe=${encodeURIComponent(type)}&token=${encodeURIComponent(token)}`, null, {
-    headers: { Cookie: cookie, Referer: 'https://tracuuphatnguoi.net/' }
+    headers: { Cookie: cookie, Referer: 'https://tracuuphatnguoi.net/', 'User-Agent': UA }
   });
   if (typeof data === 'object') return payloadResult('tracuuphatnguoi.net', data);
   const text = String(data || '').trim();
@@ -80,7 +112,7 @@ async function traCuuPhatNguoiNet(plate, type) {
 }
 
 export async function lookupMultiSource(plate, type = '1') {
-  const providers = [phatnguoiVN, zmIO, traCuuPhatNguoiNet];
+  const providers = [phatnguoiVideoAPI, phatnguoiLegacy, zmIO, traCuuPhatNguoiNet];
   const errors = [];
   for (const provider of providers) {
     try {
