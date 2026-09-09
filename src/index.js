@@ -7,12 +7,10 @@ import { lookupMultiSource } from './providers.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
-const VERSION = '1.7.0-video-exact';
+const VERSION = '1.8.0-webhook';
 const PORT = Number(process.env.PORT || 3000);
-const app = express();
-app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'api.phatnguoi.vn/phatnguoi', version: VERSION, daily: '07:00 Asia/Ho_Chi_Minh' }));
-app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
-app.listen(PORT, () => console.log(`Health server listening on ${PORT} | ${VERSION}`));
+const EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_BASE_URL || '';
+const WEBHOOK_PATH = '/telegram';
 
 const bot = new Telegraf(TOKEN);
 const subscriptions = new Map();
@@ -23,6 +21,7 @@ function formatPlaces(places = []) {
   if (!places.length) return '—';
   return places.map(p => p.address ? `${p.name}\nĐịa chỉ: ${p.address}` : p.name).join('\n');
 }
+
 function formatViolation(v, i) {
   return [`⚠️ Vi phạm ${i + 1}`,`🚘 Biển kiểm soát: ${v.licensePlate || '—'}`,`🎨 Màu biển: ${v.plateColor || '—'}`,`🚗 Loại phương tiện: ${v.vehicleType || '—'}`,`🕒 Thời gian: ${v.violationTime || '—'}`,`📍 Địa điểm: ${v.violationLocation || '—'}`,`📝 Hành vi: ${v.violationBehavior || '—'}`,`📌 Trạng thái: ${v.status || '—'}`,`👮 Đơn vị phát hiện: ${v.detectionUnit || '—'}`,`🏢 Nơi giải quyết:\n${formatPlaces(v.resolutionPlaces)}`].join('\n');
 }
@@ -39,7 +38,7 @@ function resultText(plate, result, daily = false) {
 async function handleLookup(ctx, raw, vehicleType = '1') {
   const plate = normalizePlate(raw);
   if (!isLikelyPlate(plate)) return ctx.reply('Biển số chưa đúng định dạng. Ví dụ: 43A40281 hoặc 43A-402.81');
-  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate} theo đúng workflow video...`);
+  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate}...`);
   try {
     const result = await lookupMultiSource(plate, vehicleType);
     await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, resultText(plate, result));
@@ -49,8 +48,7 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
   }
 }
 
-bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nĐang dùng đúng luồng bạn share:\nPOST https://api.phatnguoi.vn/phatnguoi\nJSON { plate } + User-Agent trình duyệt.\n\nTheo dõi hằng ngày lúc 07:00:\n/theodoi 43A40281\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
-
+bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nBot dùng webhook để hoạt động ổn định trên Render.\n\nTheo dõi hằng ngày lúc 07:00:\n/theodoi 43A40281\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
 bot.command('tracuu', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/tracuu(?:@\w+)?\s*/i, '').trim(), '1'));
 bot.command('xemay', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/xemay(?:@\w+)?\s*/i, '').trim(), '2'));
 
@@ -79,7 +77,10 @@ bot.command('huy', async ctx => {
   await ctx.reply(list.length === next.length ? `Không tìm thấy ${plate} trong danh sách theo dõi.` : `🛑 Đã hủy theo dõi ${plate}.`);
 });
 
-bot.on('text', ctx => { const text = ctx.message.text.trim(); if (!text.startsWith('/')) return handleLookup(ctx, text, '1'); });
+bot.on('text', ctx => {
+  const text = ctx.message.text.trim();
+  if (!text.startsWith('/')) return handleLookup(ctx, text, '1');
+});
 
 cron.schedule('0 7 * * *', async () => {
   for (const [chatId, list] of subscriptions.entries()) {
@@ -94,8 +95,40 @@ cron.schedule('0 7 * * *', async () => {
   }
 }, { timezone: 'Asia/Ho_Chi_Minh' });
 
-bot.catch((err, ctx) => console.error(`Telegram error ${ctx.update.update_id}:`, err.message));
-await bot.launch({ dropPendingUpdates: false });
-console.log(`Telegram bot started | ${VERSION}`);
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-process.once('SIGINT', () => bot.stop('SIGINT'));
+bot.catch((err, ctx) => console.error(`Telegram error ${ctx.update?.update_id}:`, err.message));
+
+const app = express();
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', version: VERSION, mode: EXTERNAL_URL ? 'webhook' : 'polling' }));
+app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
+
+if (EXTERNAL_URL) {
+  app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
+}
+
+const server = app.listen(PORT, async () => {
+  console.log(`Health server listening on ${PORT} | ${VERSION}`);
+  try {
+    if (EXTERNAL_URL) {
+      const webhookUrl = `${EXTERNAL_URL.replace(/\/$/, '')}${WEBHOOK_PATH}`;
+      await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: false });
+      console.log(`Telegram webhook active: ${webhookUrl}`);
+    } else {
+      await bot.launch({ dropPendingUpdates: false });
+      console.log('Telegram polling active (local fallback)');
+    }
+  } catch (error) {
+    console.error('Telegram startup failed:', error.message);
+  }
+});
+
+async function shutdown(signal) {
+  try {
+    if (!EXTERNAL_URL) bot.stop(signal);
+    server.close(() => process.exit(0));
+  } catch {
+    process.exit(0);
+  }
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
