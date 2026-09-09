@@ -7,10 +7,10 @@ import { lookupMultiSource } from './providers.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
-const VERSION = '1.6.0-daily';
+const VERSION = '1.7.0-video-exact';
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
-app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'multi-source', version: VERSION, daily: '07:00 Asia/Ho_Chi_Minh' }));
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'api.phatnguoi.vn/phatnguoi', version: VERSION, daily: '07:00 Asia/Ho_Chi_Minh' }));
 app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
 app.listen(PORT, () => console.log(`Health server listening on ${PORT} | ${VERSION}`));
 
@@ -30,8 +30,8 @@ function formatViolation(v, i) {
 function resultText(plate, result, daily = false) {
   const violations = result.violations || [];
   const prefix = daily ? '⏰ TRA CỨU PHẠT NGUỘI HẰNG NGÀY\n\n' : '';
-  if (!violations.length) return `${prefix}✅ Không tìm thấy vi phạm cho ${plate}.\n🔗 Nguồn phản hồi: ${result.source}`;
-  let text = `${prefix}🚘 Biển số: ${plate}\n📊 Số vi phạm: ${violations.length}\n🔗 Nguồn phản hồi: ${result.source}`;
+  if (!violations.length) return `${prefix}✅ Không tìm thấy vi phạm cho ${plate}.\n🔗 Nguồn: ${result.source}`;
+  let text = `${prefix}🚘 Biển số: ${plate}\n📊 Số vi phạm: ${violations.length}\n🔗 Nguồn: ${result.source}`;
   for (let i = 0; i < violations.length; i++) text += `\n\n${formatViolation(violations[i], i)}`;
   return text;
 }
@@ -39,7 +39,7 @@ function resultText(plate, result, daily = false) {
 async function handleLookup(ctx, raw, vehicleType = '1') {
   const plate = normalizePlate(raw);
   if (!isLikelyPlate(plate)) return ctx.reply('Biển số chưa đúng định dạng. Ví dụ: 43A40281 hoặc 43A-402.81');
-  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate}...`);
+  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate} theo đúng workflow video...`);
   try {
     const result = await lookupMultiSource(plate, vehicleType);
     await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, resultText(plate, result));
@@ -49,7 +49,7 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
   }
 }
 
-bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nGửi biển số để tra ngay.\n\nTheo dõi tự động hằng ngày lúc 07:00:\n/theodoi 43A40281\n\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
+bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nĐang dùng đúng luồng bạn share:\nPOST https://api.phatnguoi.vn/phatnguoi\nJSON { plate } + User-Agent trình duyệt.\n\nTheo dõi hằng ngày lúc 07:00:\n/theodoi 43A40281\nXem danh sách: /danhsach\nHủy: /huy 43A40281`));
 
 bot.command('tracuu', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/tracuu(?:@\w+)?\s*/i, '').trim(), '1'));
 bot.command('xemay', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/xemay(?:@\w+)?\s*/i, '').trim(), '2'));
@@ -61,13 +61,13 @@ bot.command('theodoi', async ctx => {
   const list = subscriptions.get(chatId) || [];
   if (!list.some(x => x.plate === plate)) list.push({ plate, vehicleType: '1' });
   subscriptions.set(chatId, list);
-  await ctx.reply(`✅ Đã bật tra cứu tự động cho ${plate}.\n⏰ Bot sẽ tự tra và gửi kết quả lúc 07:00 hằng ngày (giờ Việt Nam).`);
+  await ctx.reply(`✅ Đã bật tra cứu tự động cho ${plate}.\n⏰ 07:00 hằng ngày (giờ Việt Nam).`);
 });
 
 bot.command('danhsach', async ctx => {
   const list = subscriptions.get(String(ctx.chat.id)) || [];
   if (!list.length) return ctx.reply('Bạn chưa theo dõi biển số nào.');
-  await ctx.reply(`📋 Biển số đang theo dõi:\n${list.map(x => `• ${x.plate}`).join('\n')}\n\n⏰ Tra tự động: 07:00 hằng ngày.`);
+  await ctx.reply(`📋 Biển số đang theo dõi:\n${list.map(x => `• ${x.plate}`).join('\n')}\n\n⏰ 07:00 hằng ngày.`);
 });
 
 bot.command('huy', async ctx => {
@@ -82,14 +82,13 @@ bot.command('huy', async ctx => {
 bot.on('text', ctx => { const text = ctx.message.text.trim(); if (!text.startsWith('/')) return handleLookup(ctx, text, '1'); });
 
 cron.schedule('0 7 * * *', async () => {
-  console.log(`Daily lookup started for ${subscriptions.size} chats`);
   for (const [chatId, list] of subscriptions.entries()) {
     for (const item of list) {
       try {
         const result = await lookupMultiSource(item.plate, item.vehicleType);
         await bot.telegram.sendMessage(chatId, resultText(item.plate, result, true));
-      } catch (error) {
-        await bot.telegram.sendMessage(chatId, `⚠️ Tra cứu tự động ${item.plate} hôm nay thất bại. Bot sẽ thử lại vào lịch ngày mai.`).catch(() => {});
+      } catch {
+        await bot.telegram.sendMessage(chatId, `⚠️ Tra cứu tự động ${item.plate} hôm nay thất bại.`).catch(() => {});
       }
     }
   }
@@ -97,6 +96,6 @@ cron.schedule('0 7 * * *', async () => {
 
 bot.catch((err, ctx) => console.error(`Telegram error ${ctx.update.update_id}:`, err.message));
 await bot.launch({ dropPendingUpdates: false });
-console.log(`Telegram bot started | ${VERSION} | daily 07:00 Asia/Ho_Chi_Minh`);
+console.log(`Telegram bot started | ${VERSION}`);
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
