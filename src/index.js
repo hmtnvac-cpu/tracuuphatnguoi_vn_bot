@@ -6,10 +6,10 @@ import { lookupMultiSource } from './providers.js';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
 
-const VERSION = '1.4.0-multisource';
+const VERSION = '1.5.0-videoapi';
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
-app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'multi-source', version: VERSION }));
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tracuuphatnguoi_vn_bot', source: 'multi-source', primary: 'api.phatnguoi.vn/phatnguoi', version: VERSION }));
 app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
 app.listen(PORT, () => console.log(`Health server listening on ${PORT} | ${VERSION}`));
 
@@ -28,7 +28,7 @@ function formatViolation(v, i) {
 async function handleLookup(ctx, raw, vehicleType = '1') {
   const plate = normalizePlate(raw);
   if (!isLikelyPlate(plate)) return ctx.reply('Biển số chưa đúng định dạng. Ví dụ: 43A40281 hoặc 43A-402.81');
-  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate} qua nhiều nguồn...`);
+  const wait = await ctx.reply(`🔎 [${VERSION}] Đang tra cứu ${plate}...`);
   try {
     const result = await lookupMultiSource(plate, vehicleType);
     const violations = result.violations || [];
@@ -51,7 +51,7 @@ async function handleLookup(ctx, raw, vehicleType = '1') {
   }
 }
 
-bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nBot tự chuyển qua nhiều nguồn khi một nguồn lỗi.\nGửi biển số: 43A40281\nHoặc /tracuu 43A40281`));
+bot.start(ctx => ctx.reply(`🚦 Tra cứu phạt nguội Việt Nam\n⚙️ ${VERSION}\n\nNguồn ưu tiên: API trong workflow n8n của video (POST api.phatnguoi.vn/phatnguoi + User-Agent).\nNếu lỗi bot tự chuyển nguồn khác.\n\nGửi biển số: 43A40281\nHoặc /tracuu 43A40281`));
 bot.command('tracuu', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/tracuu(?:@\w+)?\s*/i, '').trim(), '1'));
 bot.command('xemay', ctx => handleLookup(ctx, ctx.message.text.replace(/^\/xemay(?:@\w+)?\s*/i, '').trim(), '2'));
 bot.on('text', ctx => { const text = ctx.message.text.trim(); if (!text.startsWith('/')) return handleLookup(ctx, text, '1'); });
