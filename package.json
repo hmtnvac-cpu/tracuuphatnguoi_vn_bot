@@ -1,20 +1,19 @@
 {
   "name": "tracuuphatnguoi-vn-bot",
-  "version": "1.9.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "postinstall": "npx puppeteer browsers install chrome",
     "start": "node src/index.js"
   },
   "engines": {
     "node": "20.19.5"
   },
   "dependencies": {
+    "axios": "^1.7.9",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "node-cron": "^3.0.3",
-    "puppeteer": "^24.16.0",
     "telegraf": "^4.16.3"
   }
 }
