@@ -49,9 +49,20 @@ function normalize(items) {
   return items.map(normalizeOne);
 }
 
+function extractMessage(data) {
+  return String(data?.message || data?.msg || data?.error || data?.detail || '').trim();
+}
+
+function isProviderErrorMessage(message) {
+  return /not authorized|invalid api.?key|unauthorized|forbidden|access denied|authentication|api.?key required|rate limit|too many requests/i.test(message || '');
+}
+
 function payloadResult(source, data) {
+  const message = extractMessage(data);
+  if (isProviderErrorMessage(message)) throw new Error(`${source}: ${message}`);
+
   if (data && typeof data === 'object' && data.violation === false) {
-    return { source, violations: [], message: String(data.message || data.msg || '') };
+    return { source, violations: [], message };
   }
 
   if (data && typeof data === 'object' && data.violation === true) {
@@ -61,9 +72,10 @@ function payloadResult(source, data) {
   }
 
   const items = normalize(arr(data));
-  const explicitEmpty = data?.status === 2 || data?.success === true || data?.data_info || data?.message || data?.msg;
+  const explicitEmpty = data?.status === 2 || data?.success === true || data?.data_info;
   if (items.length) return { source, violations: items };
-  if (explicitEmpty) return { source, violations: [], message: String(data?.message || data?.msg || '') };
+  if (explicitEmpty) return { source, violations: [], message };
+  if (message) throw new Error(`${source}: ${message}`);
   throw new Error(`${source}: response format unknown`);
 }
 
